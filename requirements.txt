@@ -1,0 +1,22 @@
+# Active Defense Firewall - Python Dependencies
+
+# Core dependencies
+asyncio-mqtt>=0.16.1
+python-iptables>=1.0.0
+
+# Network and packet processing
+scapy>=2.5.0
+netfilterqueue>=1.1.0
+
+# Data processing
+python-dateutil>=2.8.2
+
+# Optional: Machine Learning (for future enhancements)
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+# HTTP requests for threat reporting
+requests>=2.31.0
+
+# Logging and monitoring
+colorlog>=6.7.0
