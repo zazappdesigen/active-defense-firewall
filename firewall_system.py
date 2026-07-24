@@ -138,7 +138,21 @@ class ActiveDefenseFirewall:
                 if should_block:
                     self.handle_threat(packet.src_ip, threat.severity, threat.threat_name)
         
-        # Step 5: Update traffic monitoring
+        # Step 5: Privacy Shield enforcement
+        from defense.encrypted_tunnel import PrivacyShield
+        if not hasattr(self, '_privacy_shield'):
+            self._privacy_shield = PrivacyShield()
+        
+        allow_privacy, reason_privacy, privacy_event = self._privacy_shield.analyze_traffic(
+            packet.src_ip, packet.dst_ip, packet.dst_port,
+            packet.protocol, packet.payload
+        )
+        
+        if not allow_privacy:
+            logger.warning(f"Privacy Shield blocked: {reason_privacy}")
+            return False
+        
+        # Step 6: Update traffic monitoring
         self.traffic_monitor.update_stats(packet, 'in')
         
         return not should_block
