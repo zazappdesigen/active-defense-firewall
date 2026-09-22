@@ -11,6 +11,7 @@ import time
 import argparse
 import os
 from pathlib import Path
+from dataclasses import replace
 from datetime import datetime
 from typing import Optional, Union
 
@@ -324,12 +325,7 @@ def main():
 
     config = load_config(args.config)
     if args.interface:
-        config = FirewallConfig.from_dict({
-            **config.__dict__,
-            'interface': args.interface,
-            'rules': [rule.to_runtime_dict() for rule in config.rules],
-            'honeypots': [{'port': hp.port, 'service': hp.service} for hp in config.honeypots],
-        })
+        config = replace(config, interface=args.interface)
 
     firewall = ActiveDefenseFirewall(interface=config.interface)
     firewall.configure(config)

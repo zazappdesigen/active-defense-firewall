@@ -6,10 +6,10 @@ Production-focused Python firewall engine for packet filtering, threat detection
 
 This repository currently ships **only the Python firewall engine** found in:
 
-- `/home/runner/work/active-defense-firewall/active-defense-firewall/core`
-- `/home/runner/work/active-defense-firewall/active-defense-firewall/detection`
-- `/home/runner/work/active-defense-firewall/active-defense-firewall/defense`
-- `/home/runner/work/active-defense-firewall/active-defense-firewall/firewall_system.py`
+- `core/`
+- `detection/`
+- `defense/`
+- `firewall_system.py`
 
 It does **not** include a production web dashboard, database-backed control plane, or remote management service.
 

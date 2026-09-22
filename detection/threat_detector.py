@@ -345,7 +345,7 @@ class AnomalyDetector:
             if threat:
                 threats.append(threat)
         
-        # Brute force detection (check common auth ports)
+        # Brute force detection (check explicit auth-failure evidence)
         auth_ports = {22, 23, 21, 3389, 5900, 3306, 5432}
         if dst_port in auth_ports:
             payload_lower = payload.lower() if payload else b""
@@ -357,13 +357,12 @@ class AnomalyDetector:
                 b"access denied",
             ]
             has_failure_indicator = any(indicator in payload_lower for indicator in failure_indicators)
-            is_connection_attempt = protocol == 'TCP' and flags.get('SYN') and not flags.get('ACK')
             threat = self.detect_brute_force(
                 src_ip,
                 dst_ip,
                 dst_port,
-                has_failure_indicator or is_connection_attempt,
-                "payload failure indicator" if has_failure_indicator else "repeated auth-port connection attempts",
+                has_failure_indicator,
+                "payload failure indicator",
             )
             if threat:
                 threats.append(threat)
