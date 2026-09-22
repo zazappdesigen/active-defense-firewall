@@ -325,6 +325,8 @@ def main():
 
     config = load_config(args.config)
     if args.interface:
+        if not args.interface.strip():
+            parser.error("--interface must be a non-empty value")
         config = replace(config, interface=args.interface)
 
     firewall = ActiveDefenseFirewall(interface=config.interface)

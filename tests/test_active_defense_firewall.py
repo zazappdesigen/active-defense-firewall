@@ -128,6 +128,26 @@ def test_privacy_shield_blocks_unencrypted_http():
     assert event is not None
 
 
+def test_intrusion_prevention_detects_repeated_plaintext_auth_attempts():
+    ips = IntrusionPreventionSystem()
+    payload = b"USER admin\r\nPASS guessme\r\n"
+
+    threats = []
+    for _ in range(5):
+        threats, _ = ips.analyze_packet(
+            src_ip="203.0.113.9",
+            dst_ip="10.0.0.20",
+            src_port=40000,
+            dst_port=21,
+            protocol="TCP",
+            payload=payload,
+            payload_size=len(payload),
+            flags={"SYN": False, "ACK": True},
+        )
+
+    assert any(threat.threat_name == "Brute Force Attack" for threat in threats)
+
+
 def test_network_interface_rejects_invalid_block_rule():
     interface = NetworkInterface()
 

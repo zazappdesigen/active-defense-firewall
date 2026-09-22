@@ -415,32 +415,16 @@ class ActiveDefenseSystem:
             src_ip in self.last_response_by_ip and
             now - self.last_response_by_ip[src_ip] < self.response_cooldown
         )
+        suppressed_countermeasures = cooldown_active and severity != 'CRITICAL'
         
         # 1. Block the IP
         permanent = (severity == 'CRITICAL' and self.aggressive_mode)
         self.blocklist.block_ip(src_ip, severity, threat_event, permanent)
         actions_taken.append('BLOCKED')
         self.last_response_by_ip[src_ip] = now
-
-        if cooldown_active and severity != 'CRITICAL':
-            action = CounterAttackAction(
-                timestamp=now,
-                action_type='THREAT_RESPONSE',
-                target_ip=src_ip,
-                description=f"Response to: {threat_event}",
-                success=True,
-                details={
-                    'severity': severity,
-                    'actions': actions_taken,
-                    'countermeasures_suppressed': True,
-                }
-            )
-            self.counter_attack_log.append(action)
-            logger.info(f"Cooldown active for {src_ip}; skipped repeat countermeasures beyond block refresh")
-            return
         
         # 2. Report to threat intelligence
-        if self.report_threats and self.threat_reporter.enabled:
+        if not suppressed_countermeasures and self.report_threats and self.threat_reporter.enabled:
             self.threat_reporter.report_to_abuseipdb(
                 src_ip,
                 categories=[18, 21],  # Brute force, Port scan
@@ -449,7 +433,7 @@ class ActiveDefenseSystem:
             actions_taken.append('REPORTED')
         
         # 3. Counter-scan in aggressive mode
-        if self.aggressive_mode and self.auto_counter_attack:
+        if not suppressed_countermeasures and self.aggressive_mode and self.auto_counter_attack:
             try:
                 scan_results = self.port_scanner.quick_scan(src_ip)
                 open_ports = [p for p, is_open in scan_results.items() if is_open]
@@ -462,7 +446,12 @@ class ActiveDefenseSystem:
                 logger.error(f"Counter-scan failed: {e}")
         
         # 4. Redirect to honeypot for analysis
-        if self.auto_counter_attack and severity in ['HIGH', 'CRITICAL'] and 2222 in self.honeypots:
+        if (
+            not suppressed_countermeasures and
+            self.auto_counter_attack and
+            severity in ['HIGH', 'CRITICAL'] and
+            2222 in self.honeypots
+        ):
             self.traffic_redirector.redirect_to_honeypot(
                 src_ip, '127.0.0.1', 2222
             )
@@ -477,11 +466,14 @@ class ActiveDefenseSystem:
             success=True,
             details={
                 'severity': severity,
-                'actions': actions_taken
+                'actions': actions_taken,
+                'countermeasures_suppressed': suppressed_countermeasures,
             }
         )
         self.counter_attack_log.append(action)
         
+        if suppressed_countermeasures:
+            logger.info(f"Cooldown active for {src_ip}; skipped repeat countermeasures beyond block refresh")
         logger.info(f"Actions taken against {src_ip}: {', '.join(actions_taken)}")
     
     def deploy_honeypot(self, port: int, service_type: str = 'ssh'):
