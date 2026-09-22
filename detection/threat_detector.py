@@ -348,8 +348,9 @@ class AnomalyDetector:
                 threats.append(threat)
         
         # Credential attack detection for plaintext auth protocols
-        auth_ports = {21, 23, 110, 143}
-        if dst_port in auth_ports:
+        plaintext_auth_ports = {21, 23, 110, 143}
+        encrypted_or_binary_auth_ports = {22, 3389, 5900, 3306, 5432}
+        if dst_port in plaintext_auth_ports:
             payload_lower = payload.lower() if payload else b""
             auth_attempt_indicators = [
                 b"user ",
@@ -367,6 +368,16 @@ class AnomalyDetector:
                 dst_port,
                 has_auth_attempt_indicator,
                 "repeated plaintext authentication commands",
+            )
+            if threat:
+                threats.append(threat)
+        elif dst_port in encrypted_or_binary_auth_ports:
+            threat = self.detect_brute_force(
+                src_ip,
+                dst_ip,
+                dst_port,
+                protocol == 'TCP' and flags.get('SYN') and not flags.get('ACK'),
+                "repeated connection attempts to authentication service",
             )
             if threat:
                 threats.append(threat)

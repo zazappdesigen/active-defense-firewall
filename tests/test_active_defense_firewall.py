@@ -202,6 +202,25 @@ def test_intrusion_prevention_tracks_auth_attempts_per_target():
     assert not any(threat.threat_name == "Brute Force Attack" for threat in threats)
 
 
+def test_intrusion_prevention_detects_repeated_ssh_connection_attempts():
+    ips = IntrusionPreventionSystem()
+
+    threats = []
+    for _ in range(5):
+        threats, _ = ips.analyze_packet(
+            src_ip="203.0.113.15",
+            dst_ip="10.0.0.30",
+            src_port=45000,
+            dst_port=22,
+            protocol="TCP",
+            payload=b"",
+            payload_size=0,
+            flags={"SYN": True, "ACK": False},
+        )
+
+    assert any(threat.threat_name == "Brute Force Attack" for threat in threats)
+
+
 def test_network_interface_rejects_invalid_block_rule():
     interface = NetworkInterface()
 

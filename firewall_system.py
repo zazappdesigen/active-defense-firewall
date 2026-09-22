@@ -327,7 +327,7 @@ def main():
         sys.exit(1)
 
     config = load_config(args.config)
-    if args.interface:
+    if args.interface is not None:
         if not args.interface.strip():
             parser.error("--interface must be a non-empty value")
         config = replace(config, interface=args.interface)
