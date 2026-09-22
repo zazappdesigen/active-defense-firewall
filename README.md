@@ -132,6 +132,7 @@ The container uses the same module entrypoint:
 ```bash
 docker build -t active-defense-firewall .
 docker run --rm \
+  --user 0:0 \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --network host \
@@ -141,7 +142,7 @@ docker run --rm \
   active-defense-firewall
 ```
 
-Live packet capture and iptables enforcement require appropriate Linux capabilities and host networking.
+Live packet capture and iptables enforcement require root inside the container plus the appropriate Linux capabilities and host networking.
 Mount a config file into `/app/config`, and set `log_directory` to `/app/logs` in that container config so exported reports land in the mounted writable volume.
 
 ## Testing

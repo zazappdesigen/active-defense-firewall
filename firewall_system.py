@@ -46,7 +46,7 @@ class ActiveDefenseFirewall:
         self.traffic_monitor = TrafficMonitor()
         self.ips = IntrusionPreventionSystem()
         self.active_defense = ActiveDefenseSystem()
-        self.privacy_shield: Optional[PrivacyShield] = None
+        self.privacy_shield: Optional[PrivacyShield] = PrivacyShield()
         self.log_directory = Path("logs")
         
         # State
