@@ -4,13 +4,21 @@ Network Interface and Packet Capture
 Handles raw packet capture and injection using iptables integration
 """
 
-import subprocess
+import ipaddress
 import logging
 import socket
 import struct
+import subprocess
 from datetime import datetime
-from typing import Optional, Callable
+from typing import Callable, Optional
+
 from core.packet_engine import PacketInfo
+
+try:
+    from scapy.all import AsyncSniffer, IP
+except ImportError:  # pragma: no cover - exercised via runtime configuration
+    AsyncSniffer = None
+    IP = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,95 +31,121 @@ class NetworkInterface:
         self.interface = interface
         self.running = False
         self.packet_callback: Optional[Callable] = None
+        self.sniffer = None
+
+    def _validate_ip_or_cidr(self, value: str) -> str:
+        try:
+            if "/" in value:
+                ipaddress.ip_network(value, strict=False)
+            else:
+                ipaddress.ip_address(value)
+            return value
+        except ValueError as exc:
+            raise ValueError(f"Invalid IP or CIDR value: {value}") from exc
+
+    def _run_command(self, command: list[str], check: bool = False) -> subprocess.CompletedProcess:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if check and result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                command,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        return result
         
     def setup_iptables(self):
         """Configure iptables for packet forwarding"""
         commands = [
-            # Enable IP forwarding
-            "sysctl -w net.ipv4.ip_forward=1",
-            
-            # Create custom chain for firewall
-            "iptables -N ACTIVE_DEFENSE 2>/dev/null || true",
-            
-            # Flush existing rules in custom chain
-            "iptables -F ACTIVE_DEFENSE",
-            
-            # Send all traffic through custom chain
-            "iptables -I FORWARD -j ACTIVE_DEFENSE",
-            "iptables -I INPUT -j ACTIVE_DEFENSE",
-            "iptables -I OUTPUT -j ACTIVE_DEFENSE",
-            
-            # Default policy
-            "iptables -P FORWARD ACCEPT",
+            ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+            ["iptables", "-N", "ACTIVE_DEFENSE"],
+            ["iptables", "-F", "ACTIVE_DEFENSE"],
+            ["iptables", "-C", "FORWARD", "-j", "ACTIVE_DEFENSE"],
+            ["iptables", "-C", "INPUT", "-j", "ACTIVE_DEFENSE"],
+            ["iptables", "-C", "OUTPUT", "-j", "ACTIVE_DEFENSE"],
+            ["iptables", "-P", "FORWARD", "ACCEPT"],
         ]
-        
+
         for cmd in commands:
             try:
-                result = subprocess.run(
-                    cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                if result.returncode != 0 and "exist" not in result.stderr:
-                    logger.warning(f"Command failed: {cmd}\n{result.stderr}")
+                if cmd[:3] == ["iptables", "-C", "FORWARD"] and self._run_command(cmd).returncode != 0:
+                    self._run_command(["iptables", "-I", "FORWARD", "-j", "ACTIVE_DEFENSE"], check=True)
+                elif cmd[:3] == ["iptables", "-C", "INPUT"] and self._run_command(cmd).returncode != 0:
+                    self._run_command(["iptables", "-I", "INPUT", "-j", "ACTIVE_DEFENSE"], check=True)
+                elif cmd[:3] == ["iptables", "-C", "OUTPUT"] and self._run_command(cmd).returncode != 0:
+                    self._run_command(["iptables", "-I", "OUTPUT", "-j", "ACTIVE_DEFENSE"], check=True)
+                else:
+                    result = self._run_command(cmd)
+                    if result.returncode != 0 and "Chain already exists" not in result.stderr:
+                        logger.warning(f"Command failed: {' '.join(cmd)}\n{result.stderr}")
             except Exception as e:
-                logger.error(f"Error executing: {cmd}\n{e}")
+                logger.error(f"Error executing: {' '.join(cmd)}\n{e}")
     
     def add_block_rule(self, ip: str):
         """Add iptables rule to block an IP"""
+        valid_ip = self._validate_ip_or_cidr(ip)
         commands = [
-            f"iptables -I ACTIVE_DEFENSE -s {ip} -j DROP",
-            f"iptables -I ACTIVE_DEFENSE -d {ip} -j DROP",
+            ["iptables", "-C", "ACTIVE_DEFENSE", "-s", valid_ip, "-j", "DROP"],
+            ["iptables", "-C", "ACTIVE_DEFENSE", "-d", valid_ip, "-j", "DROP"],
         ]
-        
-        for cmd in commands:
+
+        inserts = [
+            ["iptables", "-I", "ACTIVE_DEFENSE", "-s", valid_ip, "-j", "DROP"],
+            ["iptables", "-I", "ACTIVE_DEFENSE", "-d", valid_ip, "-j", "DROP"],
+        ]
+
+        for check_cmd, insert_cmd in zip(commands, inserts):
             try:
-                subprocess.run(cmd, shell=True, check=True, capture_output=True)
-                logger.info(f"Blocked IP in iptables: {ip}")
+                if self._run_command(check_cmd).returncode != 0:
+                    self._run_command(insert_cmd, check=True)
+                logger.info(f"Blocked IP in iptables: {valid_ip}")
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to block IP {ip}: {e}")
+                logger.error(f"Failed to block IP {valid_ip}: {e}")
     
     def remove_block_rule(self, ip: str):
         """Remove iptables block rule for an IP"""
+        valid_ip = self._validate_ip_or_cidr(ip)
         commands = [
-            f"iptables -D ACTIVE_DEFENSE -s {ip} -j DROP",
-            f"iptables -D ACTIVE_DEFENSE -d {ip} -j DROP",
+            ["iptables", "-D", "ACTIVE_DEFENSE", "-s", valid_ip, "-j", "DROP"],
+            ["iptables", "-D", "ACTIVE_DEFENSE", "-d", valid_ip, "-j", "DROP"],
         ]
-        
+
         for cmd in commands:
             try:
-                subprocess.run(cmd, shell=True, check=True, capture_output=True)
-                logger.info(f"Unblocked IP in iptables: {ip}")
+                self._run_command(cmd, check=True)
+                logger.info(f"Unblocked IP in iptables: {valid_ip}")
             except subprocess.CalledProcessError:
                 pass  # Rule might not exist
     
     def add_rate_limit_rule(self, ip: str, limit: str = "10/sec"):
         """Add rate limiting rule for an IP"""
-        cmd = (
-            f"iptables -I ACTIVE_DEFENSE -s {ip} "
-            f"-m limit --limit {limit} -j ACCEPT"
-        )
-        
+        valid_ip = self._validate_ip_or_cidr(ip)
+        if not isinstance(limit, str) or "/" not in limit:
+            raise ValueError("limit must be a string like '10/sec'")
+
+        cmd = [
+            "iptables", "-I", "ACTIVE_DEFENSE", "-s", valid_ip,
+            "-m", "limit", "--limit", limit, "-j", "ACCEPT"
+        ]
+
         try:
-            subprocess.run(cmd, shell=True, check=True, capture_output=True)
-            logger.info(f"Added rate limit for {ip}: {limit}")
+            self._run_command(cmd, check=True)
+            logger.info(f"Added rate limit for {valid_ip}: {limit}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to add rate limit: {e}")
     
     def cleanup_iptables(self):
         """Remove firewall iptables rules"""
         commands = [
-            "iptables -D FORWARD -j ACTIVE_DEFENSE 2>/dev/null || true",
-            "iptables -D INPUT -j ACTIVE_DEFENSE 2>/dev/null || true",
-            "iptables -D OUTPUT -j ACTIVE_DEFENSE 2>/dev/null || true",
-            "iptables -F ACTIVE_DEFENSE 2>/dev/null || true",
-            "iptables -X ACTIVE_DEFENSE 2>/dev/null || true",
+            ["iptables", "-D", "FORWARD", "-j", "ACTIVE_DEFENSE"],
+            ["iptables", "-D", "INPUT", "-j", "ACTIVE_DEFENSE"],
+            ["iptables", "-D", "OUTPUT", "-j", "ACTIVE_DEFENSE"],
+            ["iptables", "-F", "ACTIVE_DEFENSE"],
+            ["iptables", "-X", "ACTIVE_DEFENSE"],
         ]
-        
+
         for cmd in commands:
-            subprocess.run(cmd, shell=True, capture_output=True)
+            self._run_command(cmd)
         
         logger.info("Cleaned up iptables rules")
     
@@ -229,32 +263,55 @@ class NetworkInterface:
     
     def start_capture(self, callback: Callable[[PacketInfo], None]):
         """
-        Start capturing packets (requires root privileges)
-        Note: This is a simplified implementation for demonstration
+        Start capturing packets (requires root privileges).
         """
+        if AsyncSniffer is None or IP is None:
+            raise RuntimeError("Packet capture requires scapy to be installed")
+        if self.running:
+            logger.warning("Packet capture already running")
+            return
+
         self.packet_callback = callback
         self.running = True
-        
+
         logger.info(f"Starting packet capture on {self.interface}")
-        logger.warning("Note: Actual packet capture requires root privileges and scapy")
-        logger.warning("This is a demonstration implementation")
-        
-        # In production, you would use:
-        # from scapy.all import sniff
-        # sniff(iface=self.interface, prn=self._handle_packet, store=False)
+        self.sniffer = AsyncSniffer(
+            iface=self.interface,
+            prn=self._handle_packet,
+            store=False,
+            filter="ip",
+        )
+        try:
+            self.sniffer.start()
+        except Exception:
+            self.running = False
+            self.sniffer = None
+            raise
     
     def _handle_packet(self, packet):
         """Handle captured packet (scapy callback)"""
         if not self.running or not self.packet_callback:
             return
-        
-        # This would be implemented with scapy in production
-        # For now, it's a placeholder
-        pass
+
+        try:
+            if IP is None or IP not in packet:
+                return
+            packet_info = self.parse_ip_packet(bytes(packet[IP]))
+            if packet_info is not None:
+                self.packet_callback(packet_info)
+        except Exception as exc:
+            logger.error(f"Failed to handle captured packet: {exc}")
     
     def stop_capture(self):
         """Stop packet capture"""
         self.running = False
+        if self.sniffer is not None:
+            try:
+                self.sniffer.stop()
+            except Exception as exc:
+                logger.warning(f"Error stopping packet capture: {exc}")
+            finally:
+                self.sniffer = None
         logger.info("Stopped packet capture")
     
     def inject_packet(self, packet_data: bytes):
@@ -337,4 +394,3 @@ if __name__ == '__main__':
     
     print("\nNote: Run with sudo for actual packet capture")
     print("Cleanup with: interface.cleanup_iptables()")
-

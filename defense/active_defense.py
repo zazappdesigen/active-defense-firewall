@@ -5,10 +5,10 @@ Implements offensive security measures to deter and neutralize attackers
 """
 
 import logging
+import ipaddress
 import socket
 import subprocess
 import json
-import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 from dataclasses import dataclass, asdict
@@ -213,7 +213,7 @@ class ThreatReporter:
     
     def __init__(self):
         self.report_history: List[Dict] = []
-        self.enabled = True
+        self.enabled = False
     
     def report_to_abuseipdb(self, ip: str, categories: List[int], 
                            comment: str) -> bool:
@@ -276,6 +276,13 @@ class PortScanner:
     
     def __init__(self):
         self.scan_results: Dict[str, Dict] = {}
+
+    def _validate_ip(self, target_ip: str) -> str:
+        try:
+            ipaddress.ip_address(target_ip)
+            return target_ip
+        except ValueError as exc:
+            raise ValueError(f"Invalid target IP: {target_ip}") from exc
     
     def scan_ports(self, target_ip: str, ports: List[int], 
                    timeout: float = 1.0) -> Dict[int, bool]:
@@ -284,6 +291,7 @@ class PortScanner:
         Returns dict of port: is_open
         """
         results = {}
+        target_ip = self._validate_ip(target_ip)
         
         logger.info(f"Scanning {target_ip} ports: {ports}")
         
@@ -322,6 +330,16 @@ class TrafficRedirector:
     
     def __init__(self):
         self.redirections: Dict[str, str] = {}
+
+    def _validate_ip(self, value: str) -> str:
+        try:
+            ipaddress.ip_address(value)
+            return value
+        except ValueError as exc:
+            raise ValueError(f"Invalid IP address: {value}") from exc
+
+    def _run_iptables(self, args: List[str], check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(args, check=check, capture_output=True, text=True)
     
     def redirect_to_honeypot(self, src_ip: str, honeypot_ip: str, 
                             honeypot_port: int) -> bool:
@@ -330,15 +348,18 @@ class TrafficRedirector:
         Uses iptables DNAT
         """
         try:
-            cmd = (
-                f"iptables -t nat -A PREROUTING -s {src_ip} "
-                f"-j DNAT --to-destination {honeypot_ip}:{honeypot_port}"
+            src_ip = self._validate_ip(src_ip)
+            honeypot_ip = self._validate_ip(honeypot_ip)
+            if not 1 <= honeypot_port <= 65535:
+                raise ValueError("honeypot_port must be between 1 and 65535")
+
+            self._run_iptables(
+                [
+                    "iptables", "-t", "nat", "-A", "PREROUTING",
+                    "-s", src_ip,
+                    "-j", "DNAT", "--to-destination", f"{honeypot_ip}:{honeypot_port}",
+                ]
             )
-            
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, check=True
-            )
-            
             self.redirections[src_ip] = f"{honeypot_ip}:{honeypot_port}"
             logger.info(f"Redirected {src_ip} to honeypot {honeypot_ip}:{honeypot_port}")
             return True
@@ -352,8 +373,8 @@ class TrafficRedirector:
         Drop all traffic from source IP (black hole)
         """
         try:
-            cmd = f"iptables -A INPUT -s {src_ip} -j DROP"
-            subprocess.run(cmd, shell=True, check=True, capture_output=True)
+            src_ip = self._validate_ip(src_ip)
+            self._run_iptables(["iptables", "-A", "INPUT", "-s", src_ip, "-j", "DROP"])
             
             logger.info(f"Black-holed traffic from {src_ip}")
             return True
@@ -373,11 +394,13 @@ class ActiveDefenseSystem:
         self.port_scanner = PortScanner()
         self.traffic_redirector = TrafficRedirector()
         self.counter_attack_log: List[CounterAttackAction] = []
+        self.response_cooldown = timedelta(minutes=5)
+        self.last_response_by_ip: Dict[str, datetime] = {}
         
         # Configuration
-        self.auto_counter_attack = True
+        self.auto_counter_attack = False
         self.aggressive_mode = False
-        self.report_threats = True
+        self.report_threats = False
     
     def respond_to_threat(self, threat_event, src_ip: str, severity: str):
         """
@@ -386,14 +409,34 @@ class ActiveDefenseSystem:
         logger.warning(f"Responding to threat from {src_ip}: {threat_event}")
         
         actions_taken = []
+        now = datetime.now()
+        severity = severity.upper()
+        cooldown_active = (
+            src_ip in self.last_response_by_ip and
+            now - self.last_response_by_ip[src_ip] < self.response_cooldown
+        )
         
         # 1. Block the IP
         permanent = (severity == 'CRITICAL' and self.aggressive_mode)
         self.blocklist.block_ip(src_ip, severity, threat_event, permanent)
         actions_taken.append('BLOCKED')
+        self.last_response_by_ip[src_ip] = now
+
+        if cooldown_active and severity != 'CRITICAL':
+            action = CounterAttackAction(
+                timestamp=now,
+                action_type='THREAT_RESPONSE',
+                target_ip=src_ip,
+                description=f"Response to: {threat_event}",
+                success=True,
+                details={'severity': severity, 'actions': actions_taken, 'cooldown_applied': True}
+            )
+            self.counter_attack_log.append(action)
+            logger.info(f"Cooldown active for {src_ip}; skipped repeat countermeasures")
+            return
         
         # 2. Report to threat intelligence
-        if self.report_threats:
+        if self.report_threats and self.threat_reporter.enabled:
             self.threat_reporter.report_to_abuseipdb(
                 src_ip,
                 categories=[18, 21],  # Brute force, Port scan
@@ -415,7 +458,7 @@ class ActiveDefenseSystem:
                 logger.error(f"Counter-scan failed: {e}")
         
         # 4. Redirect to honeypot for analysis
-        if severity in ['HIGH', 'CRITICAL'] and 2222 in self.honeypots:
+        if self.auto_counter_attack and severity in ['HIGH', 'CRITICAL'] and 2222 in self.honeypots:
             self.traffic_redirector.redirect_to_honeypot(
                 src_ip, '127.0.0.1', 2222
             )
@@ -468,7 +511,8 @@ class ActiveDefenseSystem:
             'threats_reported': len(self.threat_reporter.report_history),
             'counter_attacks': len(self.counter_attack_log),
             'auto_counter_attack': self.auto_counter_attack,
-            'aggressive_mode': self.aggressive_mode
+            'aggressive_mode': self.aggressive_mode,
+            'response_cooldown_seconds': int(self.response_cooldown.total_seconds()),
         }
     
     def export_logs(self, filepath: str):
@@ -515,4 +559,3 @@ if __name__ == '__main__':
     time.sleep(2)
     for port in list(defense.honeypots.keys()):
         defense.shutdown_honeypot(port)
-

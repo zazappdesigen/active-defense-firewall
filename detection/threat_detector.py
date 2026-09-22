@@ -8,7 +8,7 @@ import logging
 import json
 import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple, Optional
+from typing import Deque, Dict, List, Optional, Set, Tuple
 from collections import defaultdict, deque
 from dataclasses import dataclass, asdict
 import hashlib
@@ -191,10 +191,12 @@ class AnomalyDetector:
         self.connection_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
         
         # Track failed authentication attempts
-        self.auth_failures: Dict[str, List[datetime]] = defaultdict(list)
+        self.auth_attempts: Dict[str, List[datetime]] = defaultdict(list)
         
         # Track port scan attempts
-        self.port_scans: Dict[str, set] = defaultdict(set)
+        self.port_scans: Dict[str, Deque[Tuple[datetime, int]]] = defaultdict(
+            lambda: deque(maxlen=500)
+        )
         self.port_scan_window = timedelta(seconds=60)
         
         # Track traffic volume
@@ -210,16 +212,16 @@ class AnomalyDetector:
         """Detect port scanning behavior"""
         now = datetime.now()
         
-        # Add port to scan history
-        self.port_scans[src_ip].add(dst_port)
-        
-        # Clean old entries
-        # (In production, you'd track timestamps per port)
-        
-        # Check if threshold exceeded
-        if len(self.port_scans[src_ip]) >= self.port_scan_threshold:
+        self.port_scans[src_ip].append((now, dst_port))
+        cutoff = now - self.port_scan_window
+        recent_ports = {
+            port for ts, port in self.port_scans[src_ip]
+            if ts > cutoff
+        }
+
+        if len(recent_ports) >= self.port_scan_threshold:
             logger.warning(f"Port scan detected from {src_ip}: "
-                          f"{len(self.port_scans[src_ip])} ports")
+                          f"{len(recent_ports)} ports")
             
             return ThreatEvent(
                 timestamp=now,
@@ -232,37 +234,36 @@ class AnomalyDetector:
                 src_port=0,
                 dst_port=0,
                 protocol="TCP",
-                description=f"Scanned {len(self.port_scans[src_ip])} ports",
+                description=f"Scanned {len(recent_ports)} unique ports in 60 seconds",
                 confidence=0.9,
                 evidence={
-                    'ports_scanned': len(self.port_scans[src_ip]),
-                    'ports': list(self.port_scans[src_ip])[:20]  # First 20
+                    'ports_scanned': len(recent_ports),
+                    'ports': sorted(recent_ports)[:20],
+                    'time_window': '60 seconds',
                 }
             )
         
         return None
     
     def detect_brute_force(self, src_ip: str, dst_ip: str, 
-                          dst_port: int, is_auth_failure: bool) -> Optional[ThreatEvent]:
-        """Detect brute force authentication attempts"""
-        if not is_auth_failure:
+                          dst_port: int, is_auth_attempt: bool,
+                          evidence_reason: str) -> Optional[ThreatEvent]:
+        """Detect brute force authentication attempts from repeated auth activity."""
+        if not is_auth_attempt:
             return None
         
         now = datetime.now()
         
-        # Add failure to history
-        self.auth_failures[src_ip].append(now)
+        self.auth_attempts[src_ip].append(now)
         
-        # Clean old entries (older than 5 minutes)
         cutoff = now - timedelta(minutes=5)
-        self.auth_failures[src_ip] = [
-            ts for ts in self.auth_failures[src_ip] if ts > cutoff
+        self.auth_attempts[src_ip] = [
+            ts for ts in self.auth_attempts[src_ip] if ts > cutoff
         ]
         
-        # Check threshold
-        if len(self.auth_failures[src_ip]) >= self.auth_failure_threshold:
+        if len(self.auth_attempts[src_ip]) >= self.auth_failure_threshold:
             logger.warning(f"Brute force detected from {src_ip}: "
-                          f"{len(self.auth_failures[src_ip])} failures")
+                          f"{len(self.auth_attempts[src_ip])} attempts")
             
             return ThreatEvent(
                 timestamp=now,
@@ -275,11 +276,12 @@ class AnomalyDetector:
                 src_port=0,
                 dst_port=dst_port,
                 protocol="TCP",
-                description=f"{len(self.auth_failures[src_ip])} auth failures",
-                confidence=0.95,
+                description=f"{len(self.auth_attempts[src_ip])} auth-targeted attempts in 5 minutes",
+                confidence=0.8,
                 evidence={
-                    'failure_count': len(self.auth_failures[src_ip]),
-                    'time_window': '5 minutes'
+                    'attempt_count': len(self.auth_attempts[src_ip]),
+                    'time_window': '5 minutes',
+                    'reason': evidence_reason,
                 }
             )
         
@@ -330,7 +332,7 @@ class AnomalyDetector:
     
     def detect_anomaly(self, src_ip: str, dst_ip: str, src_port: int,
                       dst_port: int, protocol: str, payload_size: int,
-                      flags: Dict) -> List[ThreatEvent]:
+                      flags: Dict, payload: bytes) -> List[ThreatEvent]:
         """
         Run all anomaly detection checks
         Returns list of detected threats
@@ -346,8 +348,23 @@ class AnomalyDetector:
         # Brute force detection (check common auth ports)
         auth_ports = {22, 23, 21, 3389, 5900, 3306, 5432}
         if dst_port in auth_ports:
-            # In production, you'd check actual auth failure
-            threat = self.detect_brute_force(src_ip, dst_ip, dst_port, False)
+            payload_lower = payload.lower() if payload else b""
+            failure_indicators = [
+                b"auth failed",
+                b"authentication failed",
+                b"invalid password",
+                b"login failed",
+                b"access denied",
+            ]
+            has_failure_indicator = any(indicator in payload_lower for indicator in failure_indicators)
+            is_connection_attempt = protocol == 'TCP' and flags.get('SYN') and not flags.get('ACK')
+            threat = self.detect_brute_force(
+                src_ip,
+                dst_ip,
+                dst_port,
+                has_failure_indicator or is_connection_attempt,
+                "payload failure indicator" if has_failure_indicator else "repeated auth-port connection attempts",
+            )
             if threat:
                 threats.append(threat)
         
@@ -466,7 +483,7 @@ class IntrusionPreventionSystem:
         
         # Anomaly-based detection
         anomaly_threats = self.anomaly_detector.detect_anomaly(
-            src_ip, dst_ip, src_port, dst_port, protocol, payload_size, flags
+            src_ip, dst_ip, src_port, dst_port, protocol, payload_size, flags, payload
         )
         
         for threat in anomaly_threats:
@@ -526,4 +543,3 @@ if __name__ == '__main__':
     
     print(f"Should block: {should_block}")
     print(f"\nIPS Stats: {ips.get_statistics()}")
-
