@@ -345,24 +345,26 @@ class AnomalyDetector:
             if threat:
                 threats.append(threat)
         
-        # Brute force detection (check explicit auth-failure evidence)
+        # Credential attack detection for plaintext auth protocols
         auth_ports = {22, 23, 21, 3389, 5900, 3306, 5432}
         if dst_port in auth_ports:
             payload_lower = payload.lower() if payload else b""
-            failure_indicators = [
-                b"auth failed",
-                b"authentication failed",
-                b"invalid password",
-                b"login failed",
-                b"access denied",
+            auth_attempt_indicators = [
+                b"user ",
+                b"pass ",
+                b"login ",
+                b"auth ",
+                b"authorization: basic ",
             ]
-            has_failure_indicator = any(indicator in payload_lower for indicator in failure_indicators)
+            has_auth_attempt_indicator = any(
+                indicator in payload_lower for indicator in auth_attempt_indicators
+            )
             threat = self.detect_brute_force(
                 src_ip,
                 dst_ip,
                 dst_port,
-                has_failure_indicator,
-                "payload failure indicator",
+                has_auth_attempt_indicator,
+                "repeated plaintext authentication commands",
             )
             if threat:
                 threats.append(threat)

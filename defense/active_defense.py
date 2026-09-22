@@ -429,10 +429,14 @@ class ActiveDefenseSystem:
                 target_ip=src_ip,
                 description=f"Response to: {threat_event}",
                 success=True,
-                details={'severity': severity, 'actions': actions_taken, 'cooldown_applied': True}
+                details={
+                    'severity': severity,
+                    'actions': actions_taken,
+                    'countermeasures_suppressed': True,
+                }
             )
             self.counter_attack_log.append(action)
-            logger.info(f"Cooldown active for {src_ip}; skipped repeat countermeasures")
+            logger.info(f"Cooldown active for {src_ip}; skipped repeat countermeasures beyond block refresh")
             return
         
         # 2. Report to threat intelligence

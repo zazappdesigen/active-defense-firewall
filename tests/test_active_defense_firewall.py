@@ -160,7 +160,7 @@ def test_active_defense_uses_cooldown_for_repeat_responses():
 
     quick_scan.assert_called_once_with("203.0.113.10")
     redirect.assert_called_once()
-    assert defense.counter_attack_log[-1].details["cooldown_applied"] is True
+    assert defense.counter_attack_log[-1].details["countermeasures_suppressed"] is True
 
 
 def test_export_logs_creates_log_directory(tmp_path):
