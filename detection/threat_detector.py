@@ -346,7 +346,7 @@ class AnomalyDetector:
                 threats.append(threat)
         
         # Credential attack detection for plaintext auth protocols
-        auth_ports = {22, 23, 21, 3389, 5900, 3306, 5432}
+        auth_ports = {21, 23, 110, 143}
         if dst_port in auth_ports:
             payload_lower = payload.lower() if payload else b""
             auth_attempt_indicators = [

@@ -76,7 +76,7 @@ class NetworkInterface:
                     self._run_command(["iptables", "-I", "OUTPUT", "-j", "ACTIVE_DEFENSE"], check=True)
                 else:
                     result = self._run_command(cmd)
-                    if result.returncode != 0 and "Chain already exists" not in result.stderr:
+                    if result.returncode != 0 and "chain already exists" not in result.stderr.lower():
                         logger.warning(f"Command failed: {' '.join(cmd)}\n{result.stderr}")
             except Exception as e:
                 logger.error(f"Error executing: {' '.join(cmd)}\n{e}")

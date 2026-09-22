@@ -101,7 +101,7 @@ Example:
   "aggressive_mode": false,
   "report_threats": false,
   "enable_privacy_shield": true,
-  "log_directory": "logs",
+  "log_directory": "/app/logs",
   "rules": [
     {
       "name": "Block Telnet",
@@ -142,7 +142,7 @@ docker run --rm \
 ```
 
 Live packet capture and iptables enforcement require appropriate Linux capabilities and host networking.
-Mount a config file into `/app/config`, and mount a writable logs directory if you want exported reports to persist outside the container.
+Mount a config file into `/app/config`, and set `log_directory` to `/app/logs` in that container config so exported reports land in the mounted writable volume.
 
 ## Testing
 
