@@ -117,7 +117,7 @@ def test_deep_packet_inspector_flags_shellcode():
     assert any("shellcode" in finding.lower() for finding in findings)
 
 
-def test_intrusion_prevention_blocks_sql_injection():
+def test_intrusion_prevention_detects_sql_injection():
     ips = IntrusionPreventionSystem()
     payload = b"GET /?q=1 UNION SELECT password FROM users HTTP/1.1"
 

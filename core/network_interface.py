@@ -68,11 +68,11 @@ class NetworkInterface:
 
         for cmd in commands:
             try:
-                if cmd[:3] == ["iptables", "-C", "FORWARD"] and self._run_command(cmd).returncode != 0:
+                if cmd[:4] == ["iptables", "-C", "FORWARD", "-j"] and self._run_command(cmd).returncode != 0:
                     self._run_command(["iptables", "-I", "FORWARD", "-j", "ACTIVE_DEFENSE"], check=True)
-                elif cmd[:3] == ["iptables", "-C", "INPUT"] and self._run_command(cmd).returncode != 0:
+                elif cmd[:4] == ["iptables", "-C", "INPUT", "-j"] and self._run_command(cmd).returncode != 0:
                     self._run_command(["iptables", "-I", "INPUT", "-j", "ACTIVE_DEFENSE"], check=True)
-                elif cmd[:3] == ["iptables", "-C", "OUTPUT"] and self._run_command(cmd).returncode != 0:
+                elif cmd[:4] == ["iptables", "-C", "OUTPUT", "-j"] and self._run_command(cmd).returncode != 0:
                     self._run_command(["iptables", "-I", "OUTPUT", "-j", "ACTIVE_DEFENSE"], check=True)
                 else:
                     result = self._run_command(cmd)
@@ -275,18 +275,31 @@ class NetworkInterface:
         self.running = True
 
         logger.info(f"Starting packet capture on {self.interface}")
-        self.sniffer = AsyncSniffer(
-            iface=self.interface,
-            prn=self._handle_packet,
-            store=False,
-            filter="ip",
-        )
         try:
+            self.sniffer = AsyncSniffer(
+                iface=self.interface,
+                prn=self._handle_packet,
+                store=False,
+                filter="ip",
+            )
             self.sniffer.start()
-        except Exception:
-            self.running = False
-            self.sniffer = None
-            raise
+        except Exception as exc:
+            if "pcap" not in str(exc).lower():
+                self.running = False
+                self.sniffer = None
+                raise
+            logger.warning("libpcap filter unavailable; retrying packet capture without BPF filter")
+            try:
+                self.sniffer = AsyncSniffer(
+                    iface=self.interface,
+                    prn=self._handle_packet,
+                    store=False,
+                )
+                self.sniffer.start()
+            except Exception:
+                self.running = False
+                self.sniffer = None
+                raise
     
     def _handle_packet(self, packet):
         """Handle captured packet (scapy callback)"""
