@@ -23,4 +23,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
       - name: Run tests
-        run: pytest
+        run: |
+          pytest
+          python -m compileall .
+          python -c "import active_defense_firewall"

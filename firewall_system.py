@@ -8,14 +8,20 @@ import sys
 import signal
 import logging
 import time
+import argparse
+import os
+from pathlib import Path
+from dataclasses import replace
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 # Import firewall components
+from config import FirewallConfig, load_config
 from core.packet_engine import PacketFilterEngine, DeepPacketInspector, PacketInfo
 from core.network_interface import NetworkInterface, TrafficMonitor
 from detection.threat_detector import IntrusionPreventionSystem
 from defense.active_defense import ActiveDefenseSystem
+from defense.encrypted_tunnel import PrivacyShield
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +46,8 @@ class ActiveDefenseFirewall:
         self.traffic_monitor = TrafficMonitor()
         self.ips = IntrusionPreventionSystem()
         self.active_defense = ActiveDefenseSystem()
+        self.privacy_shield: Optional[PrivacyShield] = PrivacyShield()
+        self.log_directory = Path("logs")
         
         # State
         self.running = False
@@ -48,48 +56,44 @@ class ActiveDefenseFirewall:
             'threats_detected': 0,
             'ips_blocked': 0,
             'counter_attacks': 0,
+            'privacy_blocks': 0,
             'start_time': None
         }
         
         logger.info("Firewall system initialized successfully")
     
-    def configure(self, config: dict):
+    def configure(self, config: Union[dict, FirewallConfig]):
         """Apply system configuration"""
         logger.info("Applying configuration...")
+        if isinstance(config, dict):
+            config = FirewallConfig.from_dict(config)
+        self.log_directory = Path(config.log_directory)
         
         # Packet engine config
-        if 'max_connections_per_ip' in config:
-            self.packet_engine.max_connections_per_ip = config['max_connections_per_ip']
-        
-        if 'max_packets_per_second' in config:
-            self.packet_engine.max_packets_per_second = config['max_packets_per_second']
+        self.packet_engine.max_connections_per_ip = config.max_connections_per_ip
+        self.packet_engine.max_packets_per_second = config.max_packets_per_second
+        self.packet_engine.rules.clear()
         
         # IPS config
-        if 'auto_block' in config:
-            self.ips.auto_block_enabled = config['auto_block']
-        
-        if 'block_threshold' in config:
-            self.ips.block_threshold = config['block_threshold']
+        self.ips.auto_block_enabled = config.auto_block
+        self.ips.block_threshold = config.block_threshold
         
         # Active defense config
-        if 'auto_counter_attack' in config:
-            self.active_defense.auto_counter_attack = config['auto_counter_attack']
-        
-        if 'aggressive_mode' in config:
-            self.active_defense.aggressive_mode = config['aggressive_mode']
-        
-        if 'report_threats' in config:
-            self.active_defense.report_threats = config['report_threats']
+        self.active_defense.auto_counter_attack = config.auto_counter_attack
+        self.active_defense.aggressive_mode = config.aggressive_mode
+        self.active_defense.report_threats = config.report_threats
+        self.active_defense.threat_reporter.enabled = config.report_threats
+        for port in list(self.active_defense.honeypots.keys()):
+            self.active_defense.shutdown_honeypot(port)
+        self.privacy_shield = PrivacyShield() if config.enable_privacy_shield else None
         
         # Load firewall rules
-        if 'rules' in config:
-            for rule in config['rules']:
-                self.packet_engine.add_rule(rule)
+        for rule in config.rules:
+            self.packet_engine.add_rule(rule.to_runtime_dict())
         
         # Deploy honeypots
-        if 'honeypots' in config:
-            for hp in config['honeypots']:
-                self.active_defense.deploy_honeypot(hp['port'], hp['service'])
+        for hp in config.honeypots:
+            self.active_defense.deploy_honeypot(hp.port, hp.service)
         
         logger.info("Configuration applied successfully")
     
@@ -139,18 +143,16 @@ class ActiveDefenseFirewall:
                     self.handle_threat(packet.src_ip, threat.severity, threat.threat_name)
         
         # Step 5: Privacy Shield enforcement
-        from defense.encrypted_tunnel import PrivacyShield
-        if not hasattr(self, '_privacy_shield'):
-            self._privacy_shield = PrivacyShield()
-        
-        allow_privacy, reason_privacy, privacy_event = self._privacy_shield.analyze_traffic(
-            packet.src_ip, packet.dst_ip, packet.dst_port,
-            packet.protocol, packet.payload
-        )
-        
-        if not allow_privacy:
-            logger.warning(f"Privacy Shield blocked: {reason_privacy}")
-            return False
+        if self.privacy_shield is not None:
+            allow_privacy, reason_privacy, privacy_event = self.privacy_shield.analyze_traffic(
+                packet.src_ip, packet.dst_ip, packet.dst_port,
+                packet.protocol, packet.payload
+            )
+            
+            if not allow_privacy:
+                self.stats['privacy_blocks'] += 1
+                logger.warning(f"Privacy Shield blocked: {reason_privacy}")
+                return False
         
         # Step 6: Update traffic monitoring
         self.traffic_monitor.update_stats(packet, 'in')
@@ -283,20 +285,31 @@ class ActiveDefenseFirewall:
     def export_logs(self):
         """Export system logs and threat intelligence"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_directory.mkdir(parents=True, exist_ok=True)
         
         # Export threat intelligence
-        threat_file = f"logs/threat_intelligence_{timestamp}.json"
-        self.ips.threat_intel.export_threat_data(threat_file)
+        threat_file = self.log_directory / f"threat_intelligence_{timestamp}.json"
+        self.ips.threat_intel.export_threat_data(str(threat_file))
         logger.info(f"Threat intelligence exported to {threat_file}")
         
         # Export active defense logs
-        defense_file = f"logs/active_defense_{timestamp}.json"
-        self.active_defense.export_logs(defense_file)
+        defense_file = self.log_directory / f"active_defense_{timestamp}.json"
+        self.active_defense.export_logs(str(defense_file))
         logger.info(f"Active defense logs exported to {defense_file}")
+
+        if self.privacy_shield is not None:
+            privacy_file = self.log_directory / f"privacy_report_{timestamp}.json"
+            self.privacy_shield.tunnel_enforcer.export_privacy_report(str(privacy_file))
+            logger.info(f"Privacy report exported to {privacy_file}")
 
 
 def main():
     """Main entry point"""
+    parser = argparse.ArgumentParser(description="Active Defense Firewall System")
+    parser.add_argument("--config", help="Path to JSON configuration file")
+    parser.add_argument("--interface", help="Override configured network interface")
+    args = parser.parse_args()
+
     print("""
     ╔═══════════════════════════════════════════════════════════╗
     ║                                                           ║
@@ -308,38 +321,18 @@ def main():
     """)
     
     # Check for root privileges
-    import os
     if os.geteuid() != 0:
         print("ERROR: This program requires root privileges")
-        print("Please run with: sudo python3 firewall_system.py")
+        print("Please run with: sudo python3 -m active_defense_firewall")
         sys.exit(1)
-    
-    # Initialize firewall
-    firewall = ActiveDefenseFirewall(interface='eth0')
-    
-    # Example configuration
-    config = {
-        'max_connections_per_ip': 100,
-        'max_packets_per_second': 1000,
-        'auto_block': True,
-        'block_threshold': 50.0,
-        'auto_counter_attack': True,
-        'aggressive_mode': False,  # Set to True for counter-scanning
-        'report_threats': True,
-        'rules': [
-            {
-                'name': 'Block SSH from external',
-                'dst_port': 22,
-                'src_ip': '0.0.0.0/0',
-                'action': 'BLOCK'
-            }
-        ],
-        'honeypots': [
-            {'port': 2222, 'service': 'ssh'},
-            {'port': 8080, 'service': 'http'}
-        ]
-    }
-    
+
+    config = load_config(args.config)
+    if args.interface is not None:
+        if not args.interface.strip():
+            parser.error("--interface must be a non-empty value")
+        config = replace(config, interface=args.interface)
+
+    firewall = ActiveDefenseFirewall(interface=config.interface)
     firewall.configure(config)
     
     # Setup signal handlers
@@ -356,4 +349,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
