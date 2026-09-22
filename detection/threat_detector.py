@@ -192,12 +192,14 @@ class AnomalyDetector:
         
         # Track failed authentication attempts
         self.auth_attempts: Dict[Tuple[str, str, int], List[datetime]] = defaultdict(list)
+        self.pending_auth_connections: Dict[Tuple[str, str, int, int], datetime] = {}
         
         # Track port scan attempts
         self.port_scans: Dict[str, Deque[Tuple[datetime, int]]] = defaultdict(
             lambda: deque(maxlen=500)
         )
         self.port_scan_window = timedelta(seconds=60)
+        self.auth_connection_window = timedelta(seconds=30)
         
         # Track traffic volume
         self.traffic_volume: Dict[str, List[Tuple[datetime, int]]] = defaultdict(list)
@@ -372,12 +374,32 @@ class AnomalyDetector:
             if threat:
                 threats.append(threat)
         elif dst_port in encrypted_or_binary_auth_ports:
+            now = datetime.now()
+            connection_key = (src_ip, dst_ip, src_port, dst_port)
+            stale_cutoff = now - self.auth_connection_window
+            self.pending_auth_connections = {
+                key: ts for key, ts in self.pending_auth_connections.items()
+                if ts > stale_cutoff
+            }
+
+            auth_attempt_detected = False
+            if protocol == 'TCP' and flags.get('SYN') and not flags.get('ACK'):
+                self.pending_auth_connections[connection_key] = now
+            elif (
+                protocol == 'TCP' and
+                flags.get('ACK') and
+                not flags.get('SYN') and
+                connection_key in self.pending_auth_connections
+            ):
+                del self.pending_auth_connections[connection_key]
+                auth_attempt_detected = True
+
             threat = self.detect_brute_force(
                 src_ip,
                 dst_ip,
                 dst_port,
-                protocol == 'TCP' and flags.get('SYN') and not flags.get('ACK'),
-                "repeated connection attempts to authentication service",
+                auth_attempt_detected,
+                "repeated completed connections to authentication service",
             )
             if threat:
                 threats.append(threat)
