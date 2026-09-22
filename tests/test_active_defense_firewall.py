@@ -45,6 +45,30 @@ def test_module_import_and_configuration():
     deploy_honeypot.assert_called_once_with(2222, "ssh")
 
 
+def test_configuration_replaces_rules_and_honeypots():
+    firewall = ActiveDefenseFirewall(interface="eth0")
+    firewall.packet_engine.rules.append({"name": "stale"})
+    firewall.active_defense.honeypots[2222] = Mock()
+
+    config = FirewallConfig.from_dict(
+        {
+            "interface": "eth0",
+            "rules": [{"name": "Allow DNS", "dst_port": 53, "protocol": "UDP", "action": "ALLOW"}],
+            "honeypots": [{"port": 8080, "service": "http"}],
+        }
+    )
+
+    with patch.object(firewall.active_defense, "shutdown_honeypot") as shutdown_honeypot, \
+         patch.object(firewall.active_defense, "deploy_honeypot") as deploy_honeypot:
+        firewall.configure(config)
+
+    assert firewall.packet_engine.rules == [
+        {"name": "Allow DNS", "action": "ALLOW", "dst_port": 53, "protocol": "UDP"}
+    ]
+    shutdown_honeypot.assert_called_once_with(2222)
+    deploy_honeypot.assert_called_once_with(8080, "http")
+
+
 def test_rule_config_rejects_invalid_values():
     with pytest.raises(ValueError):
         RuleConfig(name="bad", src_ip="not-an-ip")
@@ -146,6 +170,36 @@ def test_intrusion_prevention_detects_repeated_plaintext_auth_attempts():
         )
 
     assert any(threat.threat_name == "Brute Force Attack" for threat in threats)
+
+
+def test_intrusion_prevention_tracks_auth_attempts_per_target():
+    ips = IntrusionPreventionSystem()
+    payload = b"USER admin\r\nPASS guessme\r\n"
+
+    for _ in range(4):
+        ips.analyze_packet(
+            src_ip="203.0.113.9",
+            dst_ip="10.0.0.20",
+            src_port=40000,
+            dst_port=21,
+            protocol="TCP",
+            payload=payload,
+            payload_size=len(payload),
+            flags={"SYN": False, "ACK": True},
+        )
+
+    threats, _ = ips.analyze_packet(
+        src_ip="203.0.113.9",
+        dst_ip="10.0.0.21",
+        src_port=40001,
+        dst_port=21,
+        protocol="TCP",
+        payload=payload,
+        payload_size=len(payload),
+        flags={"SYN": False, "ACK": True},
+    )
+
+    assert not any(threat.threat_name == "Brute Force Attack" for threat in threats)
 
 
 def test_network_interface_rejects_invalid_block_rule():

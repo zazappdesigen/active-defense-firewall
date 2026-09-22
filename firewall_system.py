@@ -72,6 +72,7 @@ class ActiveDefenseFirewall:
         # Packet engine config
         self.packet_engine.max_connections_per_ip = config.max_connections_per_ip
         self.packet_engine.max_packets_per_second = config.max_packets_per_second
+        self.packet_engine.rules.clear()
         
         # IPS config
         self.ips.auto_block_enabled = config.auto_block
@@ -82,6 +83,8 @@ class ActiveDefenseFirewall:
         self.active_defense.aggressive_mode = config.aggressive_mode
         self.active_defense.report_threats = config.report_threats
         self.active_defense.threat_reporter.enabled = config.report_threats
+        for port in list(self.active_defense.honeypots.keys()):
+            self.active_defense.shutdown_honeypot(port)
         self.privacy_shield = PrivacyShield() if config.enable_privacy_shield else None
         
         # Load firewall rules

@@ -191,7 +191,7 @@ class AnomalyDetector:
         self.connection_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
         
         # Track failed authentication attempts
-        self.auth_attempts: Dict[str, List[datetime]] = defaultdict(list)
+        self.auth_attempts: Dict[Tuple[str, str, int], List[datetime]] = defaultdict(list)
         
         # Track port scan attempts
         self.port_scans: Dict[str, Deque[Tuple[datetime, int]]] = defaultdict(
@@ -253,17 +253,18 @@ class AnomalyDetector:
             return None
         
         now = datetime.now()
+        target_key = (src_ip, dst_ip, dst_port)
         
-        self.auth_attempts[src_ip].append(now)
+        self.auth_attempts[target_key].append(now)
         
         cutoff = now - timedelta(minutes=5)
-        self.auth_attempts[src_ip] = [
-            ts for ts in self.auth_attempts[src_ip] if ts > cutoff
+        self.auth_attempts[target_key] = [
+            ts for ts in self.auth_attempts[target_key] if ts > cutoff
         ]
         
-        if len(self.auth_attempts[src_ip]) >= self.auth_failure_threshold:
+        if len(self.auth_attempts[target_key]) >= self.auth_failure_threshold:
             logger.warning(f"Brute force detected from {src_ip}: "
-                          f"{len(self.auth_attempts[src_ip])} attempts")
+                          f"{len(self.auth_attempts[target_key])} attempts against {dst_ip}:{dst_port}")
             
             return ThreatEvent(
                 timestamp=now,
@@ -276,11 +277,12 @@ class AnomalyDetector:
                 src_port=0,
                 dst_port=dst_port,
                 protocol="TCP",
-                description=f"{len(self.auth_attempts[src_ip])} auth-targeted attempts in 5 minutes",
+                description=f"{len(self.auth_attempts[target_key])} auth-targeted attempts in 5 minutes",
                 confidence=0.8,
                 evidence={
-                    'attempt_count': len(self.auth_attempts[src_ip]),
+                    'attempt_count': len(self.auth_attempts[target_key]),
                     'time_window': '5 minutes',
+                    'target': f"{dst_ip}:{dst_port}",
                     'reason': evidence_reason,
                 }
             )
